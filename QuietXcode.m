@@ -11,9 +11,7 @@
 #import <mach-o/getsect.h>
 #import <mach-o/nlist.h>
 
-#if defined (__ppc__)
-#error PowerPC is not yet supported
-#elif defined (__LP64__)
+#if defined (__LP64__)
 #error 64 bits is not yet supported
 #endif
 
@@ -66,8 +64,26 @@
 			   
 			   => 0x0002d12a - 0x0002d080 = 0xAA
 			 */
+
+			/* PPC:
+			 *
+			 * Indirect symbols for
+			 * (__TEXT,__picsymbolstub1) 84 entries
+			 * address    index name
+			 * 0x00029c04   525 _NSAddImage
+			 * ...
+			 * 0x0002a044   564 _malloc_printf
+			 *
+			 * => 0x0002a044 - 0x00029c04 = 0x440;
+			 */
+
 			uint32_t size = 0;
+#ifdef __ppc__
+			dyld_stub_malloc_printf = (unsigned char*)(getsectdatafromheader(imageHeader, SEG_TEXT, "__picsymbolstub1", &size) + 0x440);
+#else
 			dyld_stub_malloc_printf = (unsigned char*)(getsectdatafromheader(imageHeader, SEG_IMPORT, "__jump_table", &size) + 0xAA);
+#endif
+
 			break;
 		}
 	}
@@ -76,10 +92,17 @@
 		@throw [NSException exceptionWithName:nil reason:@"auto_collect_internal function not found" userInfo:nil];
 	}
 	
+#ifdef __ppc__
+	const unsigned char *malloc_printf_call = auto_collect_internal + 1292; // call site (offset in the auto_collect_internal function)
+	uint32_t malloc_printf_call_instructions[1];
+	malloc_printf_call_instructions[0] = (0x48 << 24) + (dyld_stub_malloc_printf - malloc_printf_call) + 1;
+#else
 	const unsigned char *malloc_printf_call = auto_collect_internal + 3687; // call site (offset in the auto_collect_internal function)
 	char malloc_printf_call_instructions[] = {0xe8, 0xFF, 0xFF, 0xFF, 0xFF}; // expected instruction at call site (computed below)
+
 	// Compute the offset from the call site to dyld_stub_malloc_printf
 	*(int*)(malloc_printf_call_instructions+1) = dyld_stub_malloc_printf - malloc_printf_call - sizeof(malloc_printf_call_instructions);
+#endif
 	
 	// Check that we are nop'ing the "call" instruction we are supposed to patch
 	if (memcmp(malloc_printf_call, malloc_printf_call_instructions, sizeof(malloc_printf_call_instructions)) == 0) {
@@ -89,7 +112,11 @@
 			@throw [NSException exceptionWithName:nil reason:[NSString stringWithFormat:@"vm_protect error (%d)", vm_err] userInfo:nil];
 		} else {
 			// nop the call to malloc_printf
+#ifdef __ppc__
+			*(uint32_t*)malloc_printf_call = (0x60 << 24);
+#else
 			memset((void *)malloc_printf_call, 0x90, sizeof(malloc_printf_call_instructions));
+#endif
 			NSLog(@"<QuietXcode> loaded successfully");
 		}
 	} else {
